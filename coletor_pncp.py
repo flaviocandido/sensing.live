@@ -34,6 +34,11 @@ from datetime import date, timedelta
 
 # Suas palavras-chave. O script marca como "encontrada" qualquer licitação
 # cujo objeto contenha QUALQUER UMA destas palavras/expressões.
+#
+# DICA DE TESTE DE SANIDADE: se por algum motivo o resultado vier sempre
+# zerado, troque temporariamente para algo bem genérico como ["material"]
+# ou ["serviço"] — se ainda assim vier zero, o problema está na busca (não
+# nas palavras-chave). Depois volte para as palavras reais.
 PALAVRAS_CHAVE = [
     "monitoramento de temperatura",
     "cadeia fria",
@@ -90,17 +95,35 @@ MODALIDADES = {
 }
 
 
-def fazer_requisicao(url, params, tentativas=2):
-    """Faz a chamada HTTP com timeout maior e uma nova tentativa em caso de timeout."""
+def fazer_requisicao(url, params, tentativas=4):
+    """Faz a chamada HTTP com timeout maior, respeitando rate limit (429) da API do PNCP.
+
+    A API do PNCP aplica um limite de requisições bem agressivo. Quando isso
+    acontece (HTTP 429), esperamos um tempo crescente antes de tentar de novo,
+    em vez de simplesmente desistir e perder dados silenciosamente.
+    """
     ultimo_erro = None
+    espera = 3  # segundos, dobra a cada nova tentativa
     for tentativa in range(1, tentativas + 1):
         try:
-            return requests.get(url, params=params, timeout=60)
+            resp = requests.get(url, params=params, timeout=60)
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("Retry-After")
+                tempo_espera = float(retry_after) if retry_after else espera
+                print(f"    (limite de requisições atingido — aguardando {tempo_espera:.0f}s antes de tentar de novo)")
+                time.sleep(tempo_espera)
+                espera *= 2
+                continue
+            return resp
         except requests.exceptions.RequestException as erro:
             ultimo_erro = erro
             if tentativa < tentativas:
+                time.sleep(espera)
+                espera *= 2
                 continue
-    raise ultimo_erro
+    if ultimo_erro:
+        raise ultimo_erro
+    return resp  # devolve a última resposta (ex: 429 persistente) se não houve exceção
 
 
 def bate_com_palavra_chave(objeto_compra: str) -> bool:
@@ -156,6 +179,7 @@ def buscar_abertas():
             if pagina >= total_paginas or total_paginas == 0 or pagina >= MAX_PAGINAS_POR_MODALIDADE:
                 break
             pagina += 1
+            time.sleep(0.4)  # pequena pausa entre páginas para não disparar o rate limit
 
     return resultados
 
@@ -201,6 +225,7 @@ def buscar_por_periodo():
             if pagina >= total_paginas or total_paginas == 0 or pagina >= MAX_PAGINAS_POR_MODALIDADE:
                 break
             pagina += 1
+            time.sleep(0.4)  # pequena pausa entre páginas para não disparar o rate limit
 
     return resultados
 
